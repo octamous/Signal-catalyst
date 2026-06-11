@@ -17,12 +17,12 @@
  * current or upcoming events (e.g. a possible SpaceX IPO), it must say what
  * live sources it would need and provide a research checklist + what to monitor.
  */
-import type { AiChatContext, AiChatResponse } from "@shared/schema";
+import type { AiChatContext, AiChatResponse, LiveMarketData } from "@shared/schema";
 import { CLAUDE_MODEL, resolveCredential } from "./claude";
 import { seedMarketImpactEvents } from "./marketImpact";
 
 export const AI_DISCLAIMER =
-  "Research and analysis only, not personalized financial advice. Data in this app is seeded / non-live. " +
+  "Research and analysis only, not personalized financial advice. " +
   "Verify against primary sources and consult a qualified financial advisor before making investment decisions.";
 
 type ChatInput = {
@@ -30,11 +30,40 @@ type ChatInput = {
   context?: AiChatContext;
   /** Compact summary of the seeded company/peer/method context for the model. */
   appContext?: string;
+  /** Normalized Finnhub snapshot for the selected ticker, if any. */
+  live?: LiveMarketData | null;
 };
+
+/** True when the chat live snapshot carries usable live figures/headlines. */
+function liveHasSignal(live?: LiveMarketData | null): boolean {
+  return Boolean(
+    live && live.dataStatus === "live" && (live.quote || live.metrics || live.profile || live.companyNews.length),
+  );
+}
+
+/** Compact live-context block for the chat prompt. */
+function renderChatLive(live?: LiveMarketData | null): string {
+  if (!liveHasSignal(live) || !live) return "";
+  const lines: string[] = ["LIVE DATA (Finnhub) for the selected ticker:"];
+  if (live.profile) lines.push(`- ${live.profile.name} (${live.resolvedSymbol}), ${live.profile.industry || "industry n/a"}.`);
+  if (live.quote)
+    lines.push(
+      `- Quote: ${live.quote.current} (${live.quote.percentChange >= 0 ? "+" : ""}${live.quote.percentChange.toFixed(2)}% vs prev close ${live.quote.previousClose}).`,
+    );
+  if (live.metrics)
+    lines.push(
+      `- Metrics TTM: P/S ${live.metrics.psTtm ?? "n/a"}, P/E ${live.metrics.peTtm ?? "n/a"}, rev growth ${live.metrics.revenueGrowthTtmYoy ?? "n/a"}%, gross margin ${live.metrics.grossMarginTtm ?? "n/a"}%.`,
+    );
+  if (live.companyNews.length)
+    lines.push(`- Recent headlines:\n${live.companyNews.slice(0, 5).map((n) => `  • ${n.headline} (${n.source})`).join("\n")}`);
+  return lines.join("\n");
+}
 
 /** Builds the finance-research system prompt, embedding app context. */
 function buildSystemPrompt(input: ChatInput): string {
-  const { context, appContext } = input;
+  const { context, appContext, live } = input;
+  const liveOn = liveHasSignal(live);
+  const liveBlock = renderChatLive(live);
 
   // A concise digest of the seeded market-impact catalog so the model can
   // reason about the kinds of events this app tracks — clearly flagged seeded.
@@ -73,14 +102,20 @@ function buildSystemPrompt(input: ChatInput): string {
     "     an economic calendar) — one or two sentences, not the whole answer.",
     "",
     "HARD RULES:",
-    "1. You do NOT have live prices, quotes, real-time flows, exact dates, or 'today's' figures. Never invent them or",
-    "   pretend to have browsed. But DO reason qualitatively about mechanics, scenarios, and which tickers/sectors react.",
+    liveOn
+      ? "1. You HAVE a live Finnhub snapshot (quote / metrics / recent headlines) for the selected ticker below. Use those"
+        + " specific numbers and headlines directly and cite them. For anything not in the snapshot (exact future dates,"
+        + " intraday flows), reason qualitatively and say it needs live sources."
+      : "1. You do NOT have live prices, quotes, real-time flows, exact dates, or 'today's' figures. Never invent them or"
+        + " pretend to have browsed. But DO reason qualitatively about mechanics, scenarios, and which tickers/sectors react.",
     "2. Prefer practical market-impact analysis and actionable research checkpoints over generic disclaimers. Do NOT",
     "   answer an event question with only 'I don't have live data' and a list of sources — that is a failure.",
     "3. This is a research tool, not advice. Never give personalized financial advice or tell the user to buy/sell.",
     "   Frame conclusions as research verdicts with the conditions that would change them.",
     "",
-    "APP CONTEXT (all seeded / illustrative, NOT live):",
+    liveOn ? liveBlock : "",
+    "",
+    "APP CONTEXT (seeded / illustrative unless the live block above says otherwise):",
     tickerLine,
     methodLine,
     appContext ? `\nSeeded data available for the current subject:\n${appContext}` : "",
@@ -139,7 +174,8 @@ async function callClaudeChat(input: ChatInput): Promise<AiChatResponse> {
     reply: text,
     generatedBy: "claude",
     model: data?.model ?? CLAUDE_MODEL,
-    liveData: false,
+    liveData: liveHasSignal(input.live),
+    liveStatus: input.live?.dataStatus,
     disclaimer: AI_DISCLAIMER,
     generatedAt: Date.now(),
   };
@@ -271,10 +307,16 @@ export function buildMockChat(input: ChatInput, debug?: string): AiChatResponse 
     ].join("\n");
   }
 
+  // If a live snapshot is attached, surface it up top so even the offline
+  // fallback shows the real quote/metrics rather than only qualitative scenarios.
+  const liveOn = liveHasSignal(input.live);
+  const liveBlock = liveOn ? `${renderChatLive(input.live)}\n` : "";
+
   return {
-    reply: `${note}\n\n${body}`,
+    reply: `${note}\n\n${liveBlock}${body}`,
     generatedBy: "mock",
-    liveData: false,
+    liveData: liveOn,
+    liveStatus: input.live?.dataStatus,
     disclaimer: AI_DISCLAIMER,
     generatedAt: Date.now(),
     debug,

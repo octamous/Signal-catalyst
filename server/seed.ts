@@ -139,7 +139,88 @@ export const seedCompanies = [
     whyNow: "Active-electrical-cable design wins inflecting",
     isCandidate: true,
   },
+  ...broadUniverse(),
 ];
+
+/**
+ * Broader practical universe of common growth / AI / fintwit tickers so search
+ * is not limited to the hand-authored deep-dive set. These carry lighter
+ * metadata (no seeded report) — the analysis pipeline still works for them via
+ * the deterministic fallback. They are NOT discovery candidates (isCandidate:false)
+ * so the curated "overlooked names" strip stays focused.
+ *
+ * Scores here are neutral (set to 0) on purpose: the app has no live data, so a
+ * fabricated "score" would be a false signal. The UI shows "—" for a 0 score.
+ */
+type SeedCompany = {
+  ticker: string;
+  name: string;
+  exchange: string;
+  country: string;
+  currency: string;
+  sector: string;
+  marketCap: string;
+  matchReason: string;
+  riskLevel: string;
+  score: number;
+  theme: string | null;
+  whyNow: string | null;
+  isCandidate: boolean;
+};
+
+function u(
+  ticker: string,
+  name: string,
+  sector: string,
+  riskLevel: string,
+  opts: Partial<SeedCompany> = {},
+): SeedCompany {
+  return {
+    ticker,
+    name,
+    exchange: opts.exchange ?? "NASDAQ",
+    country: opts.country ?? "United States",
+    currency: opts.currency ?? "USD",
+    sector,
+    marketCap: opts.marketCap ?? "—",
+    matchReason: "Universe match",
+    riskLevel,
+    score: opts.score ?? 0,
+    theme: opts.theme ?? sector,
+    whyNow: opts.whyNow ?? null,
+    isCandidate: false,
+  };
+}
+
+function broadUniverse(): SeedCompany[] {
+  return [
+    u("SOFI", "SoFi Technologies", "Fintech / digital bank", "High", { theme: "Fintech / digital bank", whyNow: "Bank-charter lending + fee-income mix shift" }),
+    u("TSLA", "Tesla", "EV / energy", "High"),
+    u("NVDA", "NVIDIA", "Semiconductors", "Medium"),
+    u("AMD", "Advanced Micro Devices", "Semiconductors", "Medium"),
+    u("META", "Meta Platforms", "Internet / ads", "Medium"),
+    u("GOOGL", "Alphabet", "Internet / ads", "Low"),
+    u("MSFT", "Microsoft", "Software / cloud", "Low"),
+    u("AAPL", "Apple", "Consumer hardware", "Low"),
+    u("AMZN", "Amazon", "E-commerce / cloud", "Low"),
+    u("COIN", "Coinbase Global", "Crypto exchange", "High"),
+    u("HOOD", "Robinhood Markets", "Fintech / brokerage", "High"),
+    u("RIVN", "Rivian Automotive", "EV", "Very high"),
+    u("UBER", "Uber Technologies", "Mobility / delivery", "Medium"),
+    u("CRWD", "CrowdStrike Holdings", "Cybersecurity", "Medium"),
+    u("SNOW", "Snowflake", "Data cloud", "Medium"),
+    u("NET", "Cloudflare", "Edge / network software", "Medium"),
+    u("DDOG", "Datadog", "Observability software", "Medium"),
+    u("SHOP", "Shopify", "E-commerce software", "Medium"),
+    u("SQ", "Block", "Fintech / payments", "High", { theme: "Payments + Bitcoin", whyNow: "Cash App monetization vs Square seller mix" }),
+    u("AFRM", "Affirm Holdings", "Fintech / BNPL", "High"),
+    u("APP", "AppLovin", "Adtech / mobile", "High"),
+    u("ARM", "Arm Holdings", "Semiconductors / IP", "Medium"),
+    u("SMCI", "Super Micro Computer", "AI servers", "Very high"),
+    u("ASTS", "AST SpaceMobile", "Space connectivity", "Very high"),
+    u("LUNR", "Intuitive Machines", "Lunar / space", "Very high"),
+  ];
+}
 
 const now = Date.now();
 
@@ -260,6 +341,35 @@ export const seedReports = [
     sectorBotKey: "semis",
     updatedAt: now,
   },
+  {
+    ticker: "SOFI",
+    deepDive: JSON.stringify([
+      { title: "Business model", text: "Digital-first consumer finance: lending (personal, student, home), a growing financial-services segment (SoFi Money, Invest, credit card), and the Galileo/Technisys technology platform that powers other fintechs. Holds a national bank charter, so it funds loans with lower-cost deposits." },
+      { title: "Moat and competition", text: "The bank charter plus a single-app product bundle creates cross-sell and a deposit-funding cost advantage vs non-bank fintechs. Competes with incumbent banks, Chime, Cash App, and brokerage apps; the edge is breadth, not any one product." },
+      { title: "Asymmetry check", text: "Bull case rests on fee-based, capital-light revenue (tech platform + financial services) growing faster than balance-sheet lending. Whether that mix shift is real — and how credit performs through a cycle — would need current data to judge." },
+    ]),
+    skepticReport: JSON.stringify([
+      { title: "Credit / balance-sheet risk", text: "A lender carries credit risk: charge-off trends, reserve adequacy, and how personal-loan cohorts perform in a downturn are the key unknowns and need the latest filings." },
+      { title: "Profitability quality", text: "Watch GAAP vs adjusted profitability and the role of fair-value marks on the loan book; headline growth can outrun durable earnings." },
+      { title: "Hype detector", text: "Heavily discussed on fintwit. Separate deposit/member-growth narrative from booked, recurring, fee-based revenue." },
+    ]),
+    portfolioFit: JSON.stringify({
+      band: "Core-adjacent / satellite",
+      diversification: "Adds consumer-fintech exposure distinct from pure software or hardware holdings.",
+      learning: "Mix shift toward capital-light fee revenue is the thesis. Confirm it with segment data before sizing."
+    }),
+    scoreBreakdown: JSON.stringify([
+      { label: "Catalyst strength", value: 0 },
+      { label: "Evidence quality", value: 0 },
+      { label: "Balance-sheet safety", value: 0 },
+      { label: "Hype discount", value: 0 },
+    ]),
+    catalystStrength: "Needs live data",
+    hypeRisk: "Elevated",
+    recommendedAction: "Watch only",
+    sectorBotKey: "saas",
+    updatedAt: now,
+  },
 ];
 
 export const seedCatalysts = [
@@ -273,6 +383,8 @@ export const seedCatalysts = [
   { ticker: "HIMS", month: "Aug", title: "Category expansion", detail: "Assess CAC payback on new verticals." },
   { ticker: "IONQ", month: "Jun", title: "Bookings update", detail: "Confirm whether bookings convert to recognised revenue." },
   { ticker: "IONQ", month: "Nov", title: "Hardware roadmap", detail: "Separate roadmap targets from demonstrated results." },
+  { ticker: "SOFI", month: "Next print", title: "Earnings call", detail: "Watch fee-based revenue mix, deposit growth, and personal-loan charge-off trend." },
+  { ticker: "SOFI", month: "Quarterly", title: "Credit / reserve update", detail: "Check reserve build vs charge-offs and any fair-value marks on the loan book." },
 ];
 
 export const seedMethods = [
@@ -383,6 +495,15 @@ export const seedPeerComparisons = [
       { ticker: "IONQ", isSubject: true, psTtm: 145.0, psFwd: 78.0, pFcf: null, evEbitda: 0, grossMargin: 58.0, revGrowth: 95, valueGrowthScore: 1.53 },
       { ticker: "RGTI", isSubject: false, psTtm: 120.0, psFwd: 64.0, pFcf: null, evEbitda: 0, grossMargin: 42.0, revGrowth: 30, valueGrowthScore: 4.00 },
       { ticker: "IBM", isSubject: false, psTtm: 3.6, psFwd: 3.4, pFcf: 18.2, evEbitda: 16.1, grossMargin: 56.7, revGrowth: 2, valueGrowthScore: 1.80 },
+    ]),
+  },
+  {
+    ticker: "SOFI",
+    defaultCompetitors: JSON.stringify(["HOOD", "AFRM"]),
+    rows: JSON.stringify([
+      { ticker: "SOFI", isSubject: true, psTtm: 0, psFwd: 0, pFcf: null, evEbitda: 0, grossMargin: 0, revGrowth: 0, valueGrowthScore: 0 },
+      { ticker: "HOOD", isSubject: false, psTtm: 0, psFwd: 0, pFcf: null, evEbitda: 0, grossMargin: 0, revGrowth: 0, valueGrowthScore: 0 },
+      { ticker: "AFRM", isSubject: false, psTtm: 0, psFwd: 0, pFcf: null, evEbitda: 0, grossMargin: 0, revGrowth: 0, valueGrowthScore: 0 },
     ]),
   },
 ];

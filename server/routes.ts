@@ -5,6 +5,14 @@ import { storage } from "./storage";
 import { generateAnalysis } from "./claude";
 import { chatWithAnalyst } from "./aiChat";
 import { getMarketImpact } from "./marketImpact";
+import {
+  classifyMarketNews,
+  getLiveMarketData,
+  getMarketNews,
+  hasFinnhub,
+  resolveSymbol,
+} from "./finnhub";
+import type { LiveMarketData } from "@shared/schema";
 
 const addWatchlistSchema = z.object({
   ticker: z.string().trim().min(1).max(12),
@@ -26,6 +34,9 @@ const aiChatSchema = z.object({
 const generateAnalysisSchema = z.object({
   method: z.enum(["compact", "alpha"]).optional(),
   competitors: z.array(z.string().trim().min(1).max(12)).max(4).optional(),
+  // Optional free-text the user searched (company name or "SOFI tech"). Used to
+  // resolve / build a transient company when the ticker isn't in the seed set.
+  query: z.string().trim().max(120).optional(),
 });
 
 export async function registerRoutes(
@@ -81,11 +92,14 @@ export async function registerRoutes(
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid analysis request." });
     }
-    const ticker = req.params.ticker.toUpperCase();
-    const company = await storage.getCompany(ticker);
-    if (!company) {
-      return res.status(404).json({ message: "Unknown ticker." });
-    }
+    const rawTicker = req.params.ticker.toUpperCase();
+    const query = parsed.data.query;
+    // Resolve the subject. Unknown tickers/names no longer 404 — they resolve to
+    // a transient company built from the param (or the optional `query`) so the
+    // pipeline can still produce a research report with explicit data gaps.
+    const company = await storage.resolveCompany(query ?? rawTicker);
+    const ticker = company.ticker;
+
     // Always run the single merged alpha pipeline regardless of any client input.
     const method = await storage.getMethod("alpha");
     if (!method) {
@@ -98,6 +112,27 @@ export async function registerRoutes(
         ? parsed.data.competitors.map((c) => c.toUpperCase())
         : (peer?.defaultCompetitors ?? []);
 
+    // Live market data via Finnhub (server-side only). When the key is present
+    // we resolve the best symbol — the resolved ticker first, then a Finnhub
+    // symbol lookup on the free-text query for transient/unlisted names — then
+    // pull the live snapshot. Everything degrades gracefully if the key is
+    // missing or a call fails; we never block the analysis on it.
+    let live: LiveMarketData | null = null;
+    if (hasFinnhub()) {
+      let symbol: string | null = ticker;
+      // For transient companies (not in our universe) try a Finnhub lookup on
+      // the original free-text so "SOFI tech" or a company name resolves.
+      if (company.score === 0) {
+        symbol = (await resolveSymbol(query ?? rawTicker)) ?? ticker;
+      }
+      try {
+        live = await getLiveMarketData(symbol);
+      } catch (err) {
+        console.error(`[finnhub] live fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+        live = null;
+      }
+    }
+
     const analysis = await generateAnalysis({
       ticker,
       method,
@@ -105,6 +140,7 @@ export async function registerRoutes(
       report,
       peer,
       competitors,
+      live,
     });
     res.json(analysis);
   });
@@ -121,6 +157,7 @@ export async function registerRoutes(
 
     // Assemble seeded app context for the requested ticker, if any.
     let appContext: string | undefined;
+    let live: LiveMarketData | null = null;
     const ticker = context?.selectedTicker?.toUpperCase();
     if (ticker) {
       const company = await storage.getCompany(ticker);
@@ -145,22 +182,49 @@ export async function registerRoutes(
         );
       }
       appContext = parts.length ? parts.join("\n") : undefined;
+
+      if (hasFinnhub()) {
+        try {
+          live = await getLiveMarketData(ticker);
+        } catch {
+          live = null;
+        }
+      }
     }
 
-    const response = await chatWithAnalyst({ message, context, appContext });
+    const response = await chatWithAnalyst({ message, context, appContext, live });
     res.json(response);
   });
 
-  // Market-impact calendar (seeded / mock, multi-asset).
+  // Market-impact calendar. The seeded scenario events are always returned so
+  // the contract is stable; when Finnhub is configured we also attach classified
+  // live headlines (bullish/bearish/mixed/volatility) for the asset class.
   app.get("/api/market-impact", async (req, res) => {
     const raw = typeof req.query.assetClass === "string" ? req.query.assetClass.toLowerCase() : "all";
     const assetClass = ["fx", "crypto", "stocks", "all"].includes(raw)
       ? (raw as "fx" | "crypto" | "stocks" | "all")
       : "all";
+
+    // Finnhub /news categories: general | forex | crypto (+ merger). Map our
+    // asset class onto the closest supported category; "stocks"/"all" → general.
+    const category = assetClass === "fx" ? "forex" : assetClass === "crypto" ? "crypto" : "general";
+    let liveNews: ReturnType<typeof classifyMarketNews> = [];
+    let live = false;
+    if (hasFinnhub()) {
+      try {
+        const raw = await getMarketNews(category);
+        liveNews = classifyMarketNews(raw);
+        live = liveNews.length > 0;
+      } catch {
+        liveNews = [];
+      }
+    }
+
     res.json({
       assetClass,
-      live: false,
+      live,
       events: getMarketImpact(assetClass),
+      liveNews,
     });
   });
 

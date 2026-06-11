@@ -30,6 +30,7 @@ built React client on one port. In production it runs the bundled
 | `ANTHROPIC_API_KEY`                   | For live Claude | Standard Anthropic API key. Without it, the app runs in "mock mode" (still fully functional, just no live model). |
 | `ANTHROPIC_BASE_URL`                  | Optional | Defaults to `https://api.anthropic.com`. Only override for a proxy/gateway.            |
 | `ANTHROPIC_MODEL`                     | Optional | Defaults to `claude-sonnet-4-20250514`.                                                |
+| `FINNHUB_API_KEY`                     | Optional | Enables live quote / profile / metrics / company & market news via [Finnhub](https://finnhub.io/dashboard) (free tier is enough). Without it the app runs in fallback mode — everything still works, just without live figures. Server-side only; never exposed to the client. |
 | `NODE_ENV`                            | Recommended | Set to `production`.                                                                 |
 | `PORT`                                | Auto     | Railway sets this. Do not hard-code it; the server respects it and defaults to 5000.   |
 | `CUSTOM_CRED_API_ANTHROPIC_COM_URL`   | Optional | Secure-credential proxy URL (used only if `ANTHROPIC_API_KEY` is absent).              |

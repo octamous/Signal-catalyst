@@ -241,6 +241,13 @@ export type GeneralVerdictSection = {
   notFinancialAdvice: true;
 };
 
+// Section B — what the live data / news likely does to the stock.
+export type MarketViewSection = {
+  lean: "Bullish" | "Bearish" | "Mixed"; // overall read of the live data/news
+  summary: string; // likely market reaction and why
+  drivers: string[]; // the specific data points / headlines driving the read
+};
+
 // The structured payload the generate-analysis endpoint returns (live or mock).
 export type GeneratedAnalysis = {
   ticker: string;
@@ -250,6 +257,9 @@ export type GeneratedAnalysis = {
   model?: string;
   generatedAt: number;
   debug?: string; // internal error summary when the live call fails
+  // Live-market snapshot used for this analysis (null when no Finnhub layer ran).
+  live: LiveMarketData | null;
+  marketView: MarketViewSection;
   deepDive: DeepDiveSection;
   peerValuation: PeerValuationSection;
   bearCase: BearCaseSection;
@@ -280,6 +290,90 @@ export type MarketImpactEvent = {
   sourceLabel: string;
 };
 
+// ----- Live market data (Finnhub) -----
+
+// Status of the live-data layer for a given request.
+//   live           — Finnhub key present and at least one call succeeded.
+//   unavailable    — Finnhub key present but every call failed/rate-limited.
+//   no_key         — FINNHUB_API_KEY is not configured (pure fallback mode).
+export type LiveDataStatus = "live" | "unavailable" | "no_key";
+
+export type LiveQuote = {
+  current: number;
+  change: number; // absolute change vs previous close
+  percentChange: number; // % change vs previous close
+  high: number;
+  low: number;
+  open: number;
+  previousClose: number;
+};
+
+export type LiveProfile = {
+  name: string;
+  ticker: string;
+  exchange: string;
+  country: string;
+  currency: string;
+  industry: string; // finnhubIndustry
+  marketCapitalization: number; // in millions, Finnhub's unit
+  shareOutstanding: number;
+  ipo: string;
+  weburl: string;
+  logo: string;
+};
+
+// Subset of Finnhub's /stock/metric "all" payload that we surface.
+export type LiveMetrics = {
+  peTtm: number | null;
+  psTtm: number | null;
+  evToEbitdaTtm: number | null;
+  grossMarginTtm: number | null; // %
+  netMarginTtm: number | null; // %
+  revenueGrowthTtmYoy: number | null; // %
+  high52Week: number | null;
+  low52Week: number | null;
+  beta: number | null;
+};
+
+export type LiveNewsItem = {
+  id: number;
+  datetime: number; // unix seconds
+  headline: string;
+  summary: string;
+  source: string;
+  url: string;
+  category: string;
+  related: string; // comma-joined symbols
+};
+
+// Normalized live-market context returned by the Finnhub service. Every field
+// is optional so a partial fetch (e.g. quote ok, metrics rate-limited) still
+// yields a usable object. `errors` records which sub-calls failed.
+export type LiveMarketData = {
+  dataStatus: LiveDataStatus;
+  provider: "finnhub";
+  resolvedSymbol: string | null;
+  quote: LiveQuote | null;
+  profile: LiveProfile | null;
+  metrics: LiveMetrics | null;
+  companyNews: LiveNewsItem[];
+  marketNews: LiveNewsItem[];
+  fetchedAt: number;
+  errors: string[];
+};
+
+// A live market-news headline classified for the Market Impact page.
+export type LiveMarketNewsItem = {
+  id: number;
+  datetime: number; // unix seconds
+  headline: string;
+  summary: string;
+  source: string;
+  url: string;
+  bias: "Bullish" | "Bearish" | "Mixed" | "Volatility"; // heuristic classification
+  affected: string[]; // symbols / sectors mentioned (best-effort)
+};
+
 // ----- AI research chat (built-in finance research assistant) -----
 
 export type AiChatContext = {
@@ -298,7 +392,9 @@ export type AiChatResponse = {
   reply: string;
   generatedBy: "claude" | "mock";
   model?: string;
-  liveData: false; // this app never has live market/news/calendar data wired in
+  // True when Finnhub live context (quote/news) was attached to the prompt.
+  liveData: boolean;
+  liveStatus?: LiveDataStatus;
   disclaimer: string;
   generatedAt: number;
   debug?: string; // internal error summary when the live call falls back

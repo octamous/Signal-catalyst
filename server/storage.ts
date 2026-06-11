@@ -42,6 +42,40 @@ sqlite.pragma("journal_mode = WAL");
 
 export const db = drizzle(sqlite);
 
+// Common English words that look like tickers but almost never are; excluded so
+// "SOFI tech" doesn't try to resolve "TECH" as a symbol when SOFI is present.
+const TICKER_STOPWORDS = new Set([
+  "THE", "AND", "FOR", "ARE", "WITH", "THIS", "THAT", "STOCK", "SHARE", "SHARES",
+  "ANALYSE", "ANALYZE", "ANALYSIS", "BUY", "SELL", "HOLD", "VS", "VERSUS",
+  "TECH", "AI", "INC", "CORP", "LTD", "PLC", "CO", "GROUP", "GROWTH",
+]);
+
+/**
+ * Extract candidate ticker tokens from a free-text query. A ticker token is an
+ * uppercase-able alphanumeric run of 1–6 chars (optionally with a dot, e.g.
+ * BRK.B). We dedupe and drop obvious stopwords. Order is preserved.
+ */
+export function tokenizeTickers(q: string): string[] {
+  const tokens = q.match(/[A-Za-z][A-Za-z0-9.]{0,5}/g) ?? [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const t of tokens) {
+    const up = t.toUpperCase();
+    if (up.length < 2) continue; // skip single letters to avoid noise
+    if (TICKER_STOPWORDS.has(up)) continue;
+    if (seen.has(up)) continue;
+    seen.add(up);
+    out.push(up);
+  }
+  return out;
+}
+
+/** Reduce arbitrary text to a schema-safe symbol (letters/digits/dot, max 12). */
+export function sanitizeTicker(input: string): string | null {
+  const cleaned = input.toUpperCase().replace(/[^A-Z0-9.]/g, "").slice(0, 12);
+  return cleaned || null;
+}
+
 // ---------------------------------------------------------------------------
 // Schema bootstrap. The template ships without migrations in dev, so we create
 // tables defensively (idempotent) and seed mock data on first run.
@@ -140,16 +174,49 @@ function bootstrap() {
     tx();
   }
 
+  // Universe backfill: insert any seed companies/reports/catalysts/peers that
+  // are missing, so a database created before the universe expansion still gets
+  // SOFI and the broader ticker list without a full reseed. INSERT OR IGNORE
+  // never clobbers a curated row that already exists.
+  {
+    const insertCompany = sqlite.prepare(
+      `INSERT OR IGNORE INTO companies (ticker, name, exchange, country, currency, sector, market_cap, match_reason, risk_level, score, theme, why_now, is_candidate)
+       VALUES (@ticker, @name, @exchange, @country, @currency, @sector, @marketCap, @matchReason, @riskLevel, @score, @theme, @whyNow, @isCandidate)`,
+    );
+    const insertReport = sqlite.prepare(
+      `INSERT OR IGNORE INTO reports (ticker, deep_dive, skeptic_report, portfolio_fit, score_breakdown, catalyst_strength, hype_risk, recommended_action, sector_bot_key, updated_at)
+       VALUES (@ticker, @deepDive, @skepticReport, @portfolioFit, @scoreBreakdown, @catalystStrength, @hypeRisk, @recommendedAction, @sectorBotKey, @updatedAt)`,
+    );
+    const existingCatalyst = sqlite.prepare(
+      "SELECT COUNT(*) AS n FROM catalysts WHERE ticker = @ticker AND title = @title",
+    );
+    const insertCatalyst = sqlite.prepare(
+      `INSERT INTO catalysts (ticker, month, title, detail) VALUES (@ticker, @month, @title, @detail)`,
+    );
+    const tx = sqlite.transaction(() => {
+      for (const c of seedCompanies) {
+        insertCompany.run({ ...c, theme: c.theme ?? null, whyNow: c.whyNow ?? null, isCandidate: c.isCandidate ? 1 : 0 });
+      }
+      for (const r of seedReports) insertReport.run(r);
+      for (const cat of seedCatalysts) {
+        const seen = existingCatalyst.get({ ticker: cat.ticker, title: cat.title }) as { n: number };
+        if (seen.n === 0) insertCatalyst.run(cat);
+      }
+    });
+    tx();
+  }
+
   // Methods + peer comparisons seed independently (idempotent upsert) so the
   // alpha-pivot data lands even on databases created before this migration.
-  const methodCount = sqlite.prepare("SELECT COUNT(*) AS n FROM analysis_methods").get() as { n: number };
-  if (methodCount.n === 0) {
+  // INSERT OR IGNORE backfills any newly added peer set (e.g. SOFI) without
+  // clobbering existing rows.
+  {
     const insertMethod = sqlite.prepare(
-      `INSERT INTO analysis_methods (key, name, tagline, intensity, steps)
+      `INSERT OR IGNORE INTO analysis_methods (key, name, tagline, intensity, steps)
        VALUES (@key, @name, @tagline, @intensity, @steps)`,
     );
     const insertPeer = sqlite.prepare(
-      `INSERT INTO peer_comparisons (ticker, rows, default_competitors)
+      `INSERT OR IGNORE INTO peer_comparisons (ticker, rows, default_competitors)
        VALUES (@ticker, @rows, @defaultCompetitors)`,
     );
     const tx = sqlite.transaction(() => {
@@ -170,6 +237,7 @@ export interface IStorage {
 
   // domain
   searchCompanies(q: string): Promise<Company[]>;
+  resolveCompany(input: string): Promise<Company>;
   getCompany(ticker: string): Promise<Company | undefined>;
   getDiscoveryCandidates(): Promise<Company[]>;
   getReport(ticker: string): Promise<CompanyReport | undefined>;
@@ -195,20 +263,90 @@ export class DatabaseStorage implements IStorage {
   }
 
   async searchCompanies(q: string): Promise<Company[]> {
-    const term = `%${q.trim()}%`;
-    const rows = db
+    const raw = q.trim();
+    if (!raw) return [];
+    const term = `%${raw}%`;
+    const found = new Map<string, Company>();
+
+    // 1. Direct substring match on ticker or name (the original behaviour).
+    for (const row of db
       .select()
       .from(companies)
       .where(or(like(companies.ticker, term), like(companies.name, term)))
-      .all();
-    // Rank exact ticker/name matches first, then by score.
-    const ql = q.trim().toLowerCase();
-    return rows.sort((a, b) => {
-      const aExact = a.ticker.toLowerCase() === ql || a.name.toLowerCase() === ql ? 1 : 0;
-      const bExact = b.ticker.toLowerCase() === ql || b.name.toLowerCase() === ql ? 1 : 0;
+      .all()) {
+      found.set(row.ticker, row);
+    }
+
+    // 2. Ticker-token matching: split the query into upper-case alphanumeric
+    //    tokens (e.g. "SOFI tech" → ["SOFI","TECH"]) and look each up as an
+    //    exact ticker. This means natural-language queries that *contain* a
+    //    ticker still surface that company even if the whole string doesn't
+    //    substring-match a row.
+    for (const token of tokenizeTickers(raw)) {
+      if (found.has(token)) continue;
+      const exact = db.select().from(companies).where(eq(companies.ticker, token)).get();
+      if (exact) found.set(exact.ticker, exact);
+    }
+
+    const ql = raw.toLowerCase();
+    const tokenSet = new Set(tokenizeTickers(raw));
+    return Array.from(found.values()).sort((a, b) => {
+      const aExact =
+        a.ticker.toLowerCase() === ql || a.name.toLowerCase() === ql || tokenSet.has(a.ticker) ? 1 : 0;
+      const bExact =
+        b.ticker.toLowerCase() === ql || b.name.toLowerCase() === ql || tokenSet.has(b.ticker) ? 1 : 0;
       if (aExact !== bExact) return bExact - aExact;
       return b.score - a.score;
     });
+  }
+
+  /**
+   * Resolve a company for analysis. If the ticker/name isn't seeded, return a
+   * transient (un-persisted) company object so the analysis pipeline can run on
+   * an unknown name instead of dead-ending at a 404. Transient companies carry
+   * score 0 and a clear matchReason so the UI / fallback can flag the data gap.
+   */
+  async resolveCompany(input: string): Promise<Company> {
+    const trimmed = input.trim();
+    const upper = trimmed.toUpperCase();
+
+    const direct = db.select().from(companies).where(eq(companies.ticker, upper)).get();
+    if (direct) return direct;
+
+    // Try ticker tokens inside a longer query string.
+    for (const token of tokenizeTickers(trimmed)) {
+      const hit = db.select().from(companies).where(eq(companies.ticker, token)).get();
+      if (hit) return hit;
+    }
+
+    // Try a name substring match (first/best by score).
+    const byName = db
+      .select()
+      .from(companies)
+      .where(like(companies.name, `%${trimmed}%`))
+      .all()
+      .sort((a, b) => b.score - a.score)[0];
+    if (byName) return byName;
+
+    // Build a transient company from the raw input. Prefer a clean ticker
+    // token as the symbol; otherwise derive a safe symbol from the input.
+    const tickerToken = tokenizeTickers(trimmed)[0];
+    const ticker = (tickerToken ?? sanitizeTicker(upper) ?? "UNKNOWN").slice(0, 12);
+    return {
+      ticker,
+      name: trimmed || ticker,
+      exchange: "Unknown",
+      country: "Unknown",
+      currency: "USD",
+      sector: "Unclassified",
+      marketCap: "—",
+      matchReason: "Unlisted in seed universe — analysed from query input",
+      riskLevel: "Unknown",
+      score: 0,
+      theme: null,
+      whyNow: null,
+      isCandidate: false,
+    };
   }
 
   async getCompany(ticker: string): Promise<Company | undefined> {

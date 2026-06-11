@@ -51,6 +51,8 @@ import type {
   AiChatResponse,
   Company,
   GeneratedAnalysis,
+  LiveMarketData,
+  LiveMarketNewsItem,
   MarketImpactEvent,
   PeerRow,
   ResearchRating,
@@ -206,12 +208,14 @@ function AppShell() {
   });
 
   // ---- The one analysis flow: always the merged alpha pipeline, server-side ----
+  // Accepts an optional free-text query so unknown names ("Analyse this anyway")
+  // resolve server-side into a transient company instead of dead-ending.
   const generateMutation = useMutation({
-    mutationFn: async (ticker: string) => {
+    mutationFn: async (arg: { ticker: string; query?: string }) => {
       const res = await apiRequest(
         "POST",
-        `/api/companies/${ticker}/generate-analysis`,
-        {},
+        `/api/companies/${encodeURIComponent(arg.ticker)}/generate-analysis`,
+        arg.query ? { query: arg.query } : {},
       );
       return res.json() as Promise<GeneratedAnalysis>;
     },
@@ -238,7 +242,18 @@ function AppShell() {
   const runAnalysis = (ticker: string) => {
     setSelectedTicker(ticker);
     setAnalysis(null);
-    generateMutation.mutate(ticker);
+    generateMutation.mutate({ ticker });
+  };
+
+  // Analyse a raw query that didn't match any seeded company. The server
+  // resolves it into a transient company and returns a report with data gaps.
+  const analyseAnyway = (rawQuery: string) => {
+    const q = rawQuery.trim();
+    if (!q) return;
+    const guessTicker = (q.match(/[A-Za-z][A-Za-z0-9.]{0,5}/)?.[0] ?? q).toUpperCase().slice(0, 12);
+    setSelectedTicker(guessTicker);
+    setAnalysis(null);
+    generateMutation.mutate({ ticker: guessTicker, query: q });
   };
 
   const pendingTicker = generateMutation.isPending ? selectedTicker : null;
@@ -312,9 +327,21 @@ function AppShell() {
               ) : (matches?.length ?? 0) === 0 ? (
                 <div className="rounded-xl border border-dashed border-card-border bg-card p-8 text-center" data-testid="empty-search">
                   <Search className="mx-auto h-7 w-7 text-muted-foreground/60" />
-                  <p className="mt-3 text-sm font-bold">No companies matched “{query.trim()}”</p>
+                  <p className="mt-3 text-sm font-bold">No seeded company matched “{query.trim()}”</p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Try RKLB, PLTR, IONQ, HIMS, NBIS, or a name like Rocket Lab.
+                    You can still run the analysis pipeline on it directly — the report will flag the live data it needs.
+                  </p>
+                  <Button
+                    className="mt-4"
+                    onClick={() => analyseAnyway(query)}
+                    disabled={generateMutation.isPending || !query.trim()}
+                    data-testid="button-analyse-anyway"
+                  >
+                    {generateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                    {generateMutation.isPending ? "Analysing…" : `Analyse “${query.trim()}” anyway`}
+                  </Button>
+                  <p className="mt-3 text-xs text-muted-foreground/80">
+                    Or try RKLB, PLTR, SOFI, IONQ, HIMS, NBIS, or a name like Rocket Lab.
                   </p>
                 </div>
               ) : (
@@ -525,8 +552,110 @@ function BulletGroup({ icon: Icon, label, items }: { icon: typeof Target; label:
   );
 }
 
+function fmtPct(n: number): string {
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+/* Live-data status banner + quote snapshot. Three states:
+   live (Finnhub) · live unavailable (key set, calls failed) · fallback (no key). */
+function LiveStatusBar({ live, isMock }: { live: LiveMarketData | null; isMock: boolean }) {
+  const status = live?.dataStatus ?? "no_key";
+  const isLive = status === "live" && Boolean(live?.quote || live?.metrics || live?.profile || (live?.companyNews.length ?? 0));
+
+  let label: string;
+  let tone: string;
+  if (isLive) {
+    label = "Live via Finnhub";
+    tone = "border-emerald-500/40 text-emerald-600 dark:text-emerald-400";
+  } else if (status === "unavailable") {
+    label = "Live data unavailable (feed error)";
+    tone = "border-amber-500/40 text-amber-600 dark:text-amber-400";
+  } else {
+    label = "Fallback mode — no live feed";
+    tone = "border-card-border text-muted-foreground";
+  }
+
+  const q = live?.quote ?? null;
+  const p = live?.profile ?? null;
+  const up = (q?.percentChange ?? 0) >= 0;
+
+  return (
+    <div className="space-y-2" data-testid="live-data-label">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className={`gap-1 ${tone}`} data-testid="badge-live-status">
+          <Activity className="h-3 w-3" /> {label}
+        </Badge>
+        <span className="text-xs text-muted-foreground">
+          {isLive
+            ? `Quote/metrics/news pulled from Finnhub${live?.resolvedSymbol ? ` for ${live.resolvedSymbol}` : ""} — verify before acting.`
+            : isMock
+              ? "Using Claude + local seed context. Verdicts stay on WATCHLIST / NO EDGE until live data backs a stronger call."
+              : "Generated with Claude on local seed context — verify figures against live sources before acting."}
+        </span>
+      </div>
+
+      {isLive && q ? (
+        <div
+          className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded-lg border border-card-border bg-muted/40 px-3 py-2 text-sm"
+          data-testid="quote-snapshot"
+        >
+          <span className="font-black tabular-nums">{q.current.toLocaleString()}</span>
+          <span className={`inline-flex items-center gap-1 font-semibold tabular-nums ${up ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}>
+            {up ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
+            {fmtPct(q.percentChange)}
+          </span>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            Day {q.low.toLocaleString()}–{q.high.toLocaleString()} · prev {q.previousClose.toLocaleString()}
+          </span>
+          {p ? (
+            <span className="text-xs text-muted-foreground">
+              {p.name}
+              {p.marketCapitalization ? ` · ~$${(p.marketCapitalization / 1000).toFixed(1)}B mkt cap` : ""}
+              {p.industry ? ` · ${p.industry}` : ""}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const LEAN_TONE: Record<string, string> = {
+  Bullish: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+  Bearish: "border-destructive/40 text-destructive",
+  Mixed: "border-amber-500/40 text-amber-600 dark:text-amber-400",
+};
+
+/* Section B — what the live data/news likely does to the stock. */
+function MarketViewBlock({ view }: { view: GeneratedAnalysis["marketView"] }) {
+  return (
+    <div className="rounded-2xl border border-card-border bg-card p-4" data-testid="market-view-block">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-base font-black">
+          <Activity className="h-4 w-4 text-primary" />
+          What the data &amp; news likely do
+        </div>
+        <Badge variant="outline" className={`${LEAN_TONE[view.lean] ?? ""}`} data-testid="badge-market-lean">
+          {view.lean}
+        </Badge>
+      </div>
+      <p className="mt-2 text-sm leading-6 text-muted-foreground" data-testid="text-market-view">{view.summary}</p>
+      {view.drivers.length ? (
+        <ul className="mt-2 space-y-1">
+          {view.drivers.map((d, i) => (
+            <li key={i} className="flex gap-2 text-sm leading-6">
+              <ChevronRight className="mt-1 h-3.5 w-3.5 shrink-0 text-primary" />
+              <span>{d}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 /* The single, clean analysis report. Sections:
-   Verdict → What could make this work → Valuation vs peers → Bear case → What to watch */
+   Verdict → Market view → What could make this work → Valuation vs peers → Bear case → What to watch */
 function AnalysisOutput({
   analysis,
   isWatched,
@@ -576,6 +705,12 @@ function AnalysisOutput({
           </Button>
         </div>
       </div>
+
+      {/* Live-data status + quote snapshot (Finnhub when configured). */}
+      <LiveStatusBar live={analysis.live} isMock={isMock} />
+
+      {/* B — What the live data/news likely does to the stock */}
+      <MarketViewBlock view={analysis.marketView} />
 
       {/* 1 — Verdict (prominent) */}
       <div
@@ -678,11 +813,11 @@ function AnalysisOutput({
         </div>
       ) : null}
 
-      {/* 5 — What to watch next (derived from key conditions / catalysts) */}
+      {/* 5 — What would change my mind / watchlist triggers */}
       <div className="space-y-2.5">
         <div className="flex items-center gap-2 text-base font-black">
           <Eye className="h-4 w-4 text-primary" />
-          What to watch next
+          What would change my mind · watchlist triggers
         </div>
         <div className="rounded-xl border border-card-border bg-card p-4">
           <ul className="space-y-1.5">
@@ -881,7 +1016,12 @@ function MarketImpactPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/watchlist"] }),
   });
 
-  const { data, isLoading } = useQuery<{ assetClass: string; live: boolean; events: MarketImpactEvent[] }>({
+  const { data, isLoading } = useQuery<{
+    assetClass: string;
+    live: boolean;
+    events: MarketImpactEvent[];
+    liveNews?: LiveMarketNewsItem[];
+  }>({
     queryKey: ["/api/market-impact", tab],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/market-impact?assetClass=${tab}`);
@@ -889,6 +1029,8 @@ function MarketImpactPage() {
     },
   });
   const events = data?.events ?? [];
+  const liveNews = data?.liveNews ?? [];
+  const isLive = Boolean(data?.live);
 
   return (
     <div className="grid h-dvh grid-cols-[280px_1fr] grid-rows-[auto_1fr] overflow-hidden bg-background max-lg:grid-cols-1">
@@ -908,9 +1050,15 @@ function MarketImpactPage() {
           <h1 className="mt-1 text-xl font-black tracking-tight">Market Impact — what could move FX, crypto and stocks</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className="gap-1.5 border-amber-500/50 text-amber-600 dark:text-amber-400 max-sm:hidden" data-testid="badge-seeded">
-            <AlertTriangle className="h-3.5 w-3.5" /> Seeded
-          </Badge>
+          {isLive ? (
+            <Badge variant="outline" className="gap-1.5 border-emerald-500/50 text-emerald-600 dark:text-emerald-400 max-sm:hidden" data-testid="badge-live-news">
+              <Activity className="h-3.5 w-3.5" /> Live news via Finnhub
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="gap-1.5 border-amber-500/50 text-amber-600 dark:text-amber-400 max-sm:hidden" data-testid="badge-seeded">
+              <AlertTriangle className="h-3.5 w-3.5" /> Seeded scenarios
+            </Badge>
+          )}
           <Button variant="outline" size="icon" onClick={() => setDark(!dark)} aria-label="Toggle theme">
             {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
@@ -918,6 +1066,25 @@ function MarketImpactPage() {
       </header>
 
       <main className="overflow-y-auto overscroll-contain p-6 max-lg:p-4">
+        {liveNews.length ? (
+          <Card className="mb-6 border-card-border shadow-md" data-testid="live-news-card">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-xl font-black tracking-tight">
+                <Activity className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                Live headlines, classified
+              </CardTitle>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Pulled live from Finnhub and tagged bullish / bearish / mixed / volatility with the symbols mentioned.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {liveNews.map((n) => (
+                <LiveNewsRow key={n.id || n.headline} item={n} />
+              ))}
+            </CardContent>
+          </Card>
+        ) : null}
+
         <Card className="border-card-border shadow-md">
           <CardHeader className="pb-3">
             <div>
@@ -963,11 +1130,49 @@ function MarketImpactPage() {
         </Card>
 
         <footer className="mt-6 rounded-xl border border-card-border bg-card p-4 text-xs leading-5 text-muted-foreground">
-          <span className="font-bold text-foreground">Seeded, non-live data. Not financial advice.</span>{" "}
-          Event timing and scenarios are illustrative placeholders. Confirm live dates and figures against primary sources.
+          <span className="font-bold text-foreground">Not financial advice.</span>{" "}
+          {isLive
+            ? "Headlines are live via Finnhub; the scenario cards below remain illustrative templates. Confirm exact timing and figures against primary sources."
+            : "The scenario cards are illustrative templates. Add a FINNHUB_API_KEY to attach live, classified headlines. Confirm live dates and figures against primary sources."}
         </footer>
       </main>
     </div>
+  );
+}
+
+function newsBiasTone(bias: string): string {
+  switch (bias) {
+    case "Bullish":
+      return "border-emerald-500/40 text-emerald-600 dark:text-emerald-400";
+    case "Bearish":
+      return "border-destructive/40 text-destructive";
+    case "Volatility":
+      return "border-amber-500/40 text-amber-600 dark:text-amber-400";
+    default:
+      return "border-card-border text-muted-foreground";
+  }
+}
+
+function LiveNewsRow({ item }: { item: LiveMarketNewsItem }) {
+  const when = item.datetime ? new Date(item.datetime * 1000).toLocaleDateString() : "";
+  return (
+    <a
+      href={item.url || "#"}
+      target={item.url ? "_blank" : undefined}
+      rel="noreferrer"
+      className="flex items-start justify-between gap-3 rounded-lg border border-card-border bg-muted/30 px-3 py-2 hover:bg-muted/60"
+      data-testid="live-news-row"
+    >
+      <div className="min-w-0">
+        <p className="truncate text-sm font-semibold">{item.headline}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {item.source}
+          {when ? ` · ${when}` : ""}
+          {item.affected.length ? ` · ${item.affected.join(", ")}` : ""}
+        </p>
+      </div>
+      <Badge variant="outline" className={`shrink-0 ${newsBiasTone(item.bias)}`}>{item.bias}</Badge>
+    </a>
   );
 }
 
