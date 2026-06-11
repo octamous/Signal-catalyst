@@ -16,6 +16,7 @@ import {
   Factory,
   Flag,
   Gauge,
+  HelpCircle,
   Loader2,
   MessageSquare,
   Moon,
@@ -43,6 +44,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
 import NotFound from "@/pages/not-found";
@@ -50,6 +52,8 @@ import { apiRequest, queryClient } from "./lib/queryClient";
 import type {
   AiChatResponse,
   Company,
+  DecisionAction,
+  DecisionSummary,
   GeneratedAnalysis,
   LiveMarketData,
   LiveMarketNewsItem,
@@ -106,6 +110,172 @@ function impactBadgeVariant(level: string): "destructive" | "secondary" | "outli
   if (level === "High") return "destructive";
   if (level === "Medium") return "secondary";
   return "outline";
+}
+
+/* ============================================================
+   GLOSSARY — plain-English definitions for finance jargon.
+   Each entry: a simple "what it is" + "why it matters" line.
+   Keyed by a canonical term; `aliases` catch the variants that
+   appear in live/seeded text so we can auto-highlight them.
+   ============================================================ */
+type GlossaryEntry = { term: string; def: string; why: string; aliases?: string[] };
+
+const GLOSSARY: GlossaryEntry[] = [
+  { term: "P/S TTM", def: "Price-to-Sales over the trailing twelve months — the share price compared with the last year of revenue.", why: "A quick read on how expensive a stock is versus the sales it actually brings in. Higher = pricier.", aliases: ["p/s ttm", "ps ttm", "price-to-sales", "price to sales", "p/s"] },
+  { term: "P/E", def: "Price-to-Earnings — the share price divided by yearly profit per share.", why: "Shows how many years of current profit you're paying for. High P/E means the market expects fast growth.", aliases: ["p/e", "pe ratio", "price-to-earnings", "price to earnings"] },
+  { term: "TTM", def: "Trailing Twelve Months — the most recent 12 months of results.", why: "Uses real, already-reported numbers instead of forecasts.", aliases: ["ttm", "trailing twelve months"] },
+  { term: "EPS", def: "Earnings Per Share — company profit divided by the number of shares.", why: "The per-share slice of profit; rising EPS usually supports a higher stock price.", aliases: ["eps", "earnings per share"] },
+  { term: "Revenue growth", def: "How fast sales are increasing, usually year over year (YoY).", why: "The engine of most growth stories — fast, durable growth is what justifies a high valuation.", aliases: ["revenue growth", "rev growth", "rev yoy", "yoy growth", "sales growth"] },
+  { term: "Net margin", def: "The share of revenue left as profit after ALL costs and taxes.", why: "Shows whether the business actually makes money, not just sales.", aliases: ["net margin", "net profit margin"] },
+  { term: "Gross margin", def: "Revenue minus the direct cost of the product, as a % of revenue.", why: "High gross margin means lots of room to fund growth and still profit.", aliases: ["gross margin", "gross %"] },
+  { term: "Beta", def: "How much a stock moves relative to the overall market.", why: "Beta above 1 means bigger swings than the market — more risk and more potential reward.", aliases: ["beta"] },
+  { term: "Market cap", def: "Market capitalization — the total value of all shares (price × shares).", why: "Tells you the size of the company and roughly how much room it has to grow.", aliases: ["market cap", "market capitalization", "mkt cap"] },
+  { term: "Resistance", def: "A price level a stock has struggled to rise above before.", why: "Breaking above resistance can signal momentum; failing there can stall a rally.", aliases: ["resistance"] },
+  { term: "Support", def: "A price level where a stock has tended to stop falling.", why: "Holding support suggests buyers step in; losing it can open more downside.", aliases: ["support level"] },
+  { term: "52-week high/low", def: "The highest and lowest price over the past year.", why: "A quick gauge of where the stock sits in its recent range.", aliases: ["52-week high", "52-week low", "52w high", "52w low", "52-week"] },
+  { term: "Volume", def: "How many shares traded in a period.", why: "High volume confirms conviction behind a move; low volume makes it less reliable.", aliases: ["trading volume"] },
+  { term: "Valuation", def: "What the market is paying for the business versus what it earns or owns.", why: "Even a great company can be a bad buy if the valuation is too high.", aliases: ["valuation", "valued at", "re-rate", "re-rated", "multiple"] },
+  { term: "Catalyst", def: "An upcoming event that could move the stock (earnings, a product launch, a ruling).", why: "Catalysts are what turn a thesis into an actual price move — and the timing you watch for.", aliases: ["catalyst", "catalysts"] },
+  { term: "Profitability", def: "Whether, and how much, the company earns after costs.", why: "Profitable companies depend less on raising money and survive downturns better.", aliases: ["profitability", "profitable"] },
+  { term: "Free cash flow", def: "Cash left over after running the business and funding its investments.", why: "Real spendable cash — harder to fake than accounting profit. Funds buybacks, debt paydown, growth.", aliases: ["free cash flow", "fcf", "p/fcf"] },
+  { term: "Guidance", def: "The company's own forecast for upcoming sales or profit.", why: "Markets often react more to guidance than to past results — it sets expectations.", aliases: ["guidance"] },
+  { term: "Earnings", def: "The company's profit, reported each quarter.", why: "Earnings day is a major catalyst — beats and misses vs expectations move the stock.", aliases: ["earnings", "earnings report", "earnings print"] },
+  { term: "Dilution", def: "When a company issues new shares, shrinking each existing share's slice.", why: "Dilution can quietly erode your returns even if the company grows.", aliases: ["dilution", "dilutive", "dilute"] },
+  { term: "Moat", def: "A durable advantage that protects a company from competitors.", why: "A wide moat lets a company keep high margins and growth for longer.", aliases: ["moat", "competitive advantage"] },
+  { term: "TAM", def: "Total Addressable Market — the full revenue opportunity if you captured the whole market.", why: "A big TAM means lots of room to grow; a small one caps the upside.", aliases: ["tam", "total addressable market"] },
+  { term: "ARPU", def: "Average Revenue Per User — how much money each customer generates.", why: "Rising ARPU shows a company can earn more from the same customers.", aliases: ["arpu", "average revenue per user"] },
+  { term: "EV/EBITDA", def: "Enterprise value divided by earnings before interest, tax, depreciation & amortization.", why: "A valuation measure that ignores debt and accounting noise — handy for comparing peers.", aliases: ["ev/ebitda", "ebitda"] },
+  { term: "Debt-to-equity", def: "Total debt compared with shareholder equity.", why: "High debt-to-equity means more financial risk if business slows.", aliases: ["debt-to-equity", "debt to equity", "leverage"] },
+  { term: "Short interest", def: "The share of a stock's float that traders have bet against (sold short).", why: "High short interest can fuel sharp 'short squeeze' rallies — or signal real doubt.", aliases: ["short interest", "short squeeze"] },
+];
+
+// Build a fast lookup from every alias/term to its entry, longest-first so
+// multi-word terms ("free cash flow") match before single words ("cash").
+const GLOSSARY_LOOKUP: { needle: string; entry: GlossaryEntry }[] = GLOSSARY.flatMap((e) =>
+  [e.term, ...(e.aliases ?? [])].map((a) => ({ needle: a.toLowerCase(), entry: e })),
+).sort((a, b) => b.needle.length - a.needle.length);
+
+// Look up a glossary entry by its canonical term (used for static labels).
+function glossaryFor(term: string): GlossaryEntry {
+  return GLOSSARY.find((e) => e.term === term) ?? { term, def: "", why: "" };
+}
+
+/* A jargon term with a tap/click/focus popover definition.
+   Uses Popover (not hover-only Tooltip) so it works on mobile via tap. */
+function TermTip({ entry, children }: { entry: GlossaryEntry; children?: React.ReactNode }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline cursor-help underline decoration-dotted decoration-primary/60 underline-offset-2 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+          data-testid={`term-${entry.term.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}
+          aria-label={`What is ${entry.term}?`}
+        >
+          {children ?? entry.term}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 text-sm" align="start">
+        <p className="font-black tracking-tight">{entry.term}</p>
+        <p className="mt-1 leading-6 text-muted-foreground">{entry.def}</p>
+        <p className="mt-2 leading-6"><span className="font-semibold text-primary">Why it matters: </span>{entry.why}</p>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/* A compact label that pairs text with a small (?) jargon-explainer popover. */
+function TermLabel({ entry, children }: { entry: GlossaryEntry; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      {children}
+      <Popover>
+        <PopoverTrigger asChild>
+          <button type="button" className="text-muted-foreground/70 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded-full" aria-label={`What is ${entry.term}?`}>
+            <HelpCircle className="h-3.5 w-3.5" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-72 text-sm" align="start">
+          <p className="font-black tracking-tight">{entry.term}</p>
+          <p className="mt-1 leading-6 text-muted-foreground">{entry.def}</p>
+          <p className="mt-2 leading-6"><span className="font-semibold text-primary">Why it matters: </span>{entry.why}</p>
+        </PopoverContent>
+      </Popover>
+    </span>
+  );
+}
+
+/* Renders a paragraph of (Claude- or mock-generated) text, wrapping the first
+   occurrence of each known glossary term in a tappable TermTip. Case-insensitive,
+   longest-match-first, and each distinct term is only linked once per block to
+   avoid clutter. */
+function Glossarize({ text, className }: { text: string; className?: string }) {
+  if (!text) return null;
+  const used = new Set<string>();
+  const nodes: React.ReactNode[] = [];
+  let remaining = text;
+  let guard = 0;
+
+  while (remaining.length && guard++ < 400) {
+    // Find the earliest unused glossary match in the remaining text.
+    let best: { index: number; length: number; entry: GlossaryEntry } | null = null;
+    const lower = remaining.toLowerCase();
+    for (const { needle, entry } of GLOSSARY_LOOKUP) {
+      if (used.has(entry.term)) continue;
+      // Word-ish boundary so we don't match inside other words.
+      let from = 0;
+      while (from <= lower.length) {
+        const idx = lower.indexOf(needle, from);
+        if (idx === -1) break;
+        const before = idx === 0 ? " " : lower[idx - 1];
+        const after = idx + needle.length >= lower.length ? " " : lower[idx + needle.length];
+        const boundaryOk = /[^a-z0-9]/.test(before) && /[^a-z0-9]/.test(after);
+        if (boundaryOk) {
+          if (!best || idx < best.index) best = { index: idx, length: needle.length, entry };
+          break;
+        }
+        from = idx + 1;
+      }
+    }
+
+    if (!best) {
+      nodes.push(remaining);
+      break;
+    }
+
+    if (best.index > 0) nodes.push(remaining.slice(0, best.index));
+    const matched = remaining.slice(best.index, best.index + best.length);
+    used.add(best.entry.term);
+    nodes.push(
+      <TermTip key={`${best.entry.term}-${nodes.length}`} entry={best.entry}>
+        {matched}
+      </TermTip>,
+    );
+    remaining = remaining.slice(best.index + best.length);
+  }
+
+  return <span className={className}>{nodes}</span>;
+}
+
+/* Collects the glossary terms that actually appear in the analysis text so we
+   can render a compact "Terms explained" row when inline highlighting isn't
+   enough on its own. */
+function termsInText(...texts: string[]): GlossaryEntry[] {
+  const hay = texts.join(" \n ").toLowerCase();
+  const seen = new Set<string>();
+  const found: GlossaryEntry[] = [];
+  for (const { needle, entry } of GLOSSARY_LOOKUP) {
+    if (seen.has(entry.term)) continue;
+    const idx = hay.indexOf(needle);
+    if (idx === -1) continue;
+    const before = idx === 0 ? " " : hay[idx - 1];
+    const after = idx + needle.length >= hay.length ? " " : hay[idx + needle.length];
+    if (/[^a-z0-9]/.test(before) && /[^a-z0-9]/.test(after)) {
+      seen.add(entry.term);
+      found.push(entry);
+    }
+  }
+  return found;
 }
 
 function biasTone(bias: string): string {
@@ -494,12 +664,12 @@ function PeerTable({ rows }: { rows: PeerRow[] }) {
         <thead className="bg-secondary text-left text-xs uppercase tracking-[0.1em] text-muted-foreground">
           <tr>
             <th className="px-3 py-2.5">Ticker</th>
-            <th className="px-3 py-2.5 text-right">P/S TTM</th>
+            <th className="px-3 py-2.5 text-right"><span className="inline-flex justify-end"><TermLabel entry={glossaryFor("P/S TTM")}>P/S TTM</TermLabel></span></th>
             <th className="px-3 py-2.5 text-right">P/S Fwd</th>
-            <th className="px-3 py-2.5 text-right">P/FCF</th>
-            <th className="px-3 py-2.5 text-right">EV/EBITDA</th>
-            <th className="px-3 py-2.5 text-right">Gross %</th>
-            <th className="px-3 py-2.5 text-right">Rev YoY</th>
+            <th className="px-3 py-2.5 text-right"><span className="inline-flex justify-end"><TermLabel entry={glossaryFor("Free cash flow")}>P/FCF</TermLabel></span></th>
+            <th className="px-3 py-2.5 text-right"><span className="inline-flex justify-end"><TermLabel entry={glossaryFor("EV/EBITDA")}>EV/EBITDA</TermLabel></span></th>
+            <th className="px-3 py-2.5 text-right"><span className="inline-flex justify-end"><TermLabel entry={glossaryFor("Gross margin")}>Gross %</TermLabel></span></th>
+            <th className="px-3 py-2.5 text-right"><span className="inline-flex justify-end"><TermLabel entry={glossaryFor("Revenue growth")}>Rev YoY</TermLabel></span></th>
             <th className="px-3 py-2.5 text-right">V/G</th>
           </tr>
         </thead>
@@ -654,8 +824,131 @@ function MarketViewBlock({ view }: { view: GeneratedAnalysis["marketView"] }) {
   );
 }
 
+/* Decision-action presentation. Big, plain-language labels for the verdict badge. */
+const DECISION_META: Record<
+  DecisionAction,
+  { label: string; blurb: string; variant: "default" | "secondary" | "destructive" | "outline"; ring: string; tone: string }
+> = {
+  BUY_CANDIDATE: { label: "Buy candidate", blurb: "Worth serious consideration now", variant: "default", ring: "border-emerald-500/40 bg-emerald-500/[0.06]", tone: "text-emerald-600 dark:text-emerald-400" },
+  WAIT_FOR_PULLBACK: { label: "Wait", blurb: "Good company, wait for a better price", variant: "secondary", ring: "border-amber-500/40 bg-amber-500/[0.06]", tone: "text-amber-600 dark:text-amber-400" },
+  WATCHLIST: { label: "Watch", blurb: "Track it — don't act yet", variant: "secondary", ring: "border-amber-500/30 bg-amber-500/[0.05]", tone: "text-amber-600 dark:text-amber-400" },
+  AVOID: { label: "Avoid", blurb: "Not worth the risk right now", variant: "destructive", ring: "border-destructive/40 bg-destructive/[0.06]", tone: "text-destructive" },
+  SELL_OR_AVOID: { label: "Sell / avoid", blurb: "Risks outweigh the upside", variant: "destructive", ring: "border-destructive/40 bg-destructive/[0.06]", tone: "text-destructive" },
+  NO_EDGE: { label: "No edge", blurb: "Nothing actionable here yet", variant: "outline", ring: "border-card-border bg-muted/30", tone: "text-muted-foreground" },
+};
+
+const IMPACT_TONE: Record<string, string> = {
+  Bullish: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+  Bearish: "border-destructive/40 text-destructive",
+  Mixed: "border-amber-500/40 text-amber-600 dark:text-amber-400",
+  Volatile: "border-amber-500/40 text-amber-600 dark:text-amber-400",
+};
+
+/* Section 0 — the decision-first plain-English card that LEADS the report.
+   Answers: would I buy this now, what could it do to the stock, why, what kind
+   of company is it, and the biggest risk — all in simple language with hover
+   definitions for any jargon. */
+function DecisionCard({ d, ticker }: { d: DecisionSummary; ticker: string }) {
+  const meta = DECISION_META[d.action] ?? DECISION_META.NO_EDGE;
+  const impactTone = IMPACT_TONE[d.expectedStockImpact.direction] ?? "";
+  return (
+    <div className={`rounded-2xl border-2 p-5 ${meta.ring}`} data-testid="decision-card">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Gauge className={`h-5 w-5 ${meta.tone}`} />
+          <span className="text-xs font-black uppercase tracking-[0.18em] text-muted-foreground">Decision</span>
+        </div>
+        <div className="flex flex-col items-end">
+          <Badge variant={meta.variant} className="text-base font-black" data-testid="badge-decision-action">
+            {meta.label}
+          </Badge>
+          <span className="mt-1 text-[11px] text-muted-foreground">{meta.blurb}</span>
+        </div>
+      </div>
+
+      {/* What I'd do with this stock */}
+      <p className="mt-4 text-lg font-bold leading-7" data-testid="text-decision-plain">
+        <Glossarize text={d.plainEnglish} />
+      </p>
+
+      {/* What this could do to the stock */}
+      <div className="mt-4 rounded-xl border border-card-border bg-card/70 p-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold uppercase tracking-[0.14em] text-muted-foreground">What this could do to the stock</span>
+          <Badge variant="outline" className={impactTone} data-testid="badge-impact-direction">
+            <Activity className="mr-1 h-3 w-3" />
+            {d.expectedStockImpact.direction}
+          </Badge>
+        </div>
+        <p className="mt-1.5 text-sm leading-6 text-muted-foreground" data-testid="text-impact-explanation">
+          <Glossarize text={d.expectedStockImpact.explanation} />
+        </p>
+      </div>
+
+      {/* Why */}
+      {d.whyNow.length ? (
+        <div className="mt-4">
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-muted-foreground">Why</p>
+          <ul className="mt-1.5 space-y-1" data-testid="list-why-now">
+            {d.whyNow.map((r, i) => (
+              <li key={i} className="flex gap-2 text-sm leading-6">
+                <Check className="mt-1 h-3.5 w-3.5 shrink-0 text-primary" />
+                <span><Glossarize text={r} /></span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* Growth story + biggest risk */}
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <div className="rounded-xl border border-card-border bg-card/70 p-3">
+          <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.14em] text-muted-foreground">
+            <Sparkles className="h-3.5 w-3.5 text-primary" /> What kind of company is this?
+          </div>
+          <p className="mt-1.5 text-sm leading-6 text-muted-foreground" data-testid="text-growth-story">
+            <Glossarize text={d.growthStory} />
+          </p>
+        </div>
+        <div className="rounded-xl border border-destructive/30 bg-destructive/[0.04] p-3">
+          <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.14em] text-destructive">
+            <AlertTriangle className="h-3.5 w-3.5" /> Biggest risk
+          </div>
+          <p className="mt-1.5 text-sm leading-6 text-muted-foreground" data-testid="text-main-risk">
+            <Glossarize text={d.mainRisk} />
+          </p>
+        </div>
+      </div>
+
+      <p className="mt-4 text-[11px] italic text-muted-foreground/80">
+        Research verdict for {ticker} — not personalized financial advice.
+      </p>
+    </div>
+  );
+}
+
+/* A compact "Terms explained" row — chips for every jargon term that appears in
+   the analysis, each tappable for a plain-English definition. */
+function TermsExplained({ entries }: { entries: GlossaryEntry[] }) {
+  if (!entries.length) return null;
+  return (
+    <div className="rounded-xl border border-card-border bg-card p-3" data-testid="terms-explained">
+      <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.14em] text-muted-foreground">
+        <HelpCircle className="h-3.5 w-3.5 text-primary" /> Terms explained — tap any to define
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {entries.map((e) => (
+          <span key={e.term} className="rounded-md bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
+            <TermTip entry={e} />
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* The single, clean analysis report. Sections:
-   Verdict → Market view → What could make this work → Valuation vs peers → Bear case → What to watch */
+   Decision → Market view → Verdict → What could make this work → Valuation vs peers → Bear case → What to watch */
 function AnalysisOutput({
   analysis,
   isWatched,
@@ -673,6 +966,20 @@ function AnalysisOutput({
 }) {
   const rating = RATING_META[analysis.generalVerdict.rating];
   const isMock = analysis.generatedBy === "mock";
+  const d = analysis.decisionSummary;
+  // Collect jargon that shows up across the analysis text for the "Terms explained" row.
+  const glossaryHits = termsInText(
+    d.plainEnglish,
+    d.expectedStockImpact.explanation,
+    d.growthStory,
+    d.mainRisk,
+    ...d.whyNow,
+    analysis.marketView.summary,
+    ...analysis.marketView.drivers,
+    analysis.generalVerdict.why,
+    analysis.deepDive.summary,
+    ...analysis.peerValuation.note ? [analysis.peerValuation.note] : [],
+  );
   return (
     <div className="space-y-5" data-testid="analysis-output">
       {/* Header + provenance + actions */}
@@ -709,42 +1016,57 @@ function AnalysisOutput({
       {/* Live-data status + quote snapshot (Finnhub when configured). */}
       <LiveStatusBar live={analysis.live} isMock={isMock} />
 
-      {/* B — What the live data/news likely does to the stock */}
-      <MarketViewBlock view={analysis.marketView} />
+      {/* 0 — DECISION FIRST. The lead card: what I'd do, what it could do to the
+          stock, why, what kind of company, biggest risk. */}
+      <DecisionCard d={d} ticker={analysis.ticker} />
 
-      {/* 1 — Verdict (prominent) */}
-      <div
-        className="rounded-2xl border border-primary/30 bg-primary/[0.05] p-5"
-        data-testid="verdict-block"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className={`h-5 w-5 ${rating.tone}`} />
-            <span className="text-xs font-black uppercase tracking-[0.16em] text-muted-foreground">Verdict</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Badge variant={rating.variant} className="text-sm" data-testid="badge-verdict-rating">{rating.label}</Badge>
-            <Badge variant="outline">{analysis.generalVerdict.confidence} confidence</Badge>
+      {/* Plain-English definitions for any jargon in the analysis. */}
+      <TermsExplained entries={glossaryHits} />
+
+      {/* Supporting evidence below the decision. Market view + verdict are now
+          secondary, lighter-weight cards rather than the lead. */}
+      <details className="group rounded-2xl border border-card-border bg-card/60" data-testid="evidence-disclosure" open>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-2 p-4 text-sm font-black">
+          <span className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-primary" /> The evidence behind the call
+          </span>
+          <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" />
+        </summary>
+        <div className="space-y-4 px-4 pb-4">
+          {/* What the live data/news likely does to the stock */}
+          <MarketViewBlock view={analysis.marketView} />
+
+          {/* Research verdict detail (secondary to the Decision card above) */}
+          <div className="rounded-xl border border-card-border bg-card p-4" data-testid="verdict-block">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className={`h-4 w-4 ${rating.tone}`} />
+                <span className="text-xs font-black uppercase tracking-[0.16em] text-muted-foreground">Research verdict</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant={rating.variant} className="text-sm" data-testid="badge-verdict-rating">{rating.label}</Badge>
+                <Badge variant="outline">{analysis.generalVerdict.confidence} confidence</Badge>
+              </div>
+            </div>
+            <p className="mt-3 text-sm leading-7 text-muted-foreground" data-testid="text-verdict-why">
+              <Glossarize text={analysis.generalVerdict.why} />
+            </p>
+            {analysis.generalVerdict.keyConditions.length ? (
+              <div className="mt-3">
+                <p className="text-xs font-bold uppercase tracking-[0.14em] text-muted-foreground">What would change this</p>
+                <ul className="mt-1.5 space-y-1">
+                  {analysis.generalVerdict.keyConditions.map((c, i) => (
+                    <li key={i} className="flex gap-2 text-sm leading-6 text-muted-foreground">
+                      <Flag className="mt-1 h-3.5 w-3.5 shrink-0 text-primary" />
+                      <span><Glossarize text={c} /></span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         </div>
-        <p className="mt-3 text-base font-semibold leading-7" data-testid="text-verdict-why">{analysis.generalVerdict.why}</p>
-        {analysis.generalVerdict.keyConditions.length ? (
-          <div className="mt-3">
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-muted-foreground">What would change this</p>
-            <ul className="mt-1.5 space-y-1">
-              {analysis.generalVerdict.keyConditions.map((c, i) => (
-                <li key={i} className="flex gap-2 text-sm leading-6 text-muted-foreground">
-                  <Flag className="mt-1 h-3.5 w-3.5 shrink-0 text-primary" />
-                  <span>{c}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        <p className="mt-3 text-[11px] italic text-muted-foreground/80">
-          Research verdict only — not personalized financial advice.
-        </p>
-      </div>
+      </details>
 
       {/* 2 — What could make this stock work */}
       <div className="space-y-3">
@@ -1153,6 +1475,21 @@ function newsBiasTone(bias: string): string {
   }
 }
 
+/* Plain-English read of what a classified headline likely means for price. */
+function newsImpactPlain(item: LiveMarketNewsItem): string {
+  const who = item.affected.length ? item.affected.slice(0, 4).join(", ") : "the names it mentions";
+  switch (item.bias) {
+    case "Bullish":
+      return `Likely a positive read for ${who} — the kind of headline that can lift the price if the market believes it.`;
+    case "Bearish":
+      return `Likely a negative read for ${who} — the kind of headline that can pressure the price near-term.`;
+    case "Volatility":
+      return `Could swing ${who} sharply either way — expect bigger moves, not a clear direction.`;
+    default:
+      return `Mixed read for ${who} — no clear single direction; watch how the market actually reacts.`;
+  }
+}
+
 function LiveNewsRow({ item }: { item: LiveMarketNewsItem }) {
   const when = item.datetime ? new Date(item.datetime * 1000).toLocaleDateString() : "";
   return (
@@ -1160,18 +1497,23 @@ function LiveNewsRow({ item }: { item: LiveMarketNewsItem }) {
       href={item.url || "#"}
       target={item.url ? "_blank" : undefined}
       rel="noreferrer"
-      className="flex items-start justify-between gap-3 rounded-lg border border-card-border bg-muted/30 px-3 py-2 hover:bg-muted/60"
+      className="block rounded-lg border border-card-border bg-muted/30 px-3 py-2 hover:bg-muted/60"
       data-testid="live-news-row"
     >
-      <div className="min-w-0">
-        <p className="truncate text-sm font-semibold">{item.headline}</p>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          {item.source}
-          {when ? ` · ${when}` : ""}
-          {item.affected.length ? ` · ${item.affected.join(", ")}` : ""}
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{item.headline}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {item.source}
+            {when ? ` · ${when}` : ""}
+            {item.affected.length ? ` · ${item.affected.join(", ")}` : ""}
+          </p>
+        </div>
+        <Badge variant="outline" className={`shrink-0 ${newsBiasTone(item.bias)}`}>{item.bias}</Badge>
       </div>
-      <Badge variant="outline" className={`shrink-0 ${newsBiasTone(item.bias)}`}>{item.bias}</Badge>
+      <p className="mt-1.5 text-xs leading-5 text-muted-foreground" data-testid="news-impact-plain">
+        <span className="font-semibold text-foreground">Likely impact: </span>{newsImpactPlain(item)}
+      </p>
     </a>
   );
 }

@@ -211,6 +211,35 @@ export type BearFlag = {
 
 export type ResearchRating = "BUY_CANDIDATE" | "WATCHLIST" | "AVOID" | "NO_EDGE";
 
+// The plain-English decision action. Superset of ResearchRating with two extra
+// decision-oriented actions the user asked for. Maps onto ResearchRating for the
+// existing verdict badge: WAIT_FOR_PULLBACK/SELL_OR_AVOID collapse appropriately.
+export type DecisionAction =
+  | "BUY_CANDIDATE"
+  | "WAIT_FOR_PULLBACK"
+  | "WATCHLIST"
+  | "AVOID"
+  | "SELL_OR_AVOID"
+  | "NO_EDGE";
+
+// Section 0 — the decision-first, plain-English summary that leads the report.
+// Answers: would I buy this now, what could this do to the stock, why, what kind
+// of company is it, and what's the biggest risk — all in simple language.
+export type DecisionSummary = {
+  action: DecisionAction;
+  // One short sentence: "I would / would not consider this now because…" —
+  // phrased as a research verdict, never personal advice.
+  plainEnglish: string;
+  expectedStockImpact: {
+    direction: "Bullish" | "Bearish" | "Mixed" | "Volatile";
+    explanation: string; // 1-2 sentences: what current data/news could do to price
+  };
+  whyNow: string[]; // 2-4 simple-language reasons
+  // 1-2 sentences: is it up-and-coming, and what theme (AI, fintech, space, etc.)
+  growthStory: string;
+  mainRisk: string; // one simple sentence
+};
+
 // ----- High-level structured sections for the 3-step alpha method -----
 
 export type DeepDiveSection = {
@@ -259,6 +288,8 @@ export type GeneratedAnalysis = {
   debug?: string; // internal error summary when the live call fails
   // Live-market snapshot used for this analysis (null when no Finnhub layer ran).
   live: LiveMarketData | null;
+  // Section 0 — the decision-first plain-English summary that leads the report.
+  decisionSummary: DecisionSummary;
   marketView: MarketViewSection;
   deepDive: DeepDiveSection;
   peerValuation: PeerValuationSection;

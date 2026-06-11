@@ -23,6 +23,8 @@ import type {
   BearFlag,
   Company,
   CompanyReport,
+  DecisionAction,
+  DecisionSummary,
   GeneratedAnalysis,
   LiveMarketData,
   MarketViewSection,
@@ -156,7 +158,17 @@ function buildPrompt(input: GenerateInput): { system: string; user: string } {
     "investor's own research workflow. Be specific, quantitative, skeptical, and PRACTICAL. No educational fluff, " +
     "no generic disclaimers padding the answer. This is a research tool, NOT personalized financial advice — " +
     "express conclusions only as a research verdict, never as a personal instruction to buy or sell.\n\n" +
-    "OUTPUT IS FOUR SECTIONS, in this order:\n" +
+    "WRITE FOR A SMART INVESTOR WHO IS NOT FLUENT IN ANALYST JARGON. Lead with the decision in plain English. " +
+    "Whenever you use a finance term (P/S, P/E, EV/EBITDA, beta, gross/net margin, free cash flow, dilution, moat, " +
+    "TAM, ARPU, etc.), add a short plain-English gloss in parentheses the FIRST time it appears, e.g. " +
+    "\"P/S of 8 (price ÷ yearly sales — how expensive the stock is vs revenue)\".\n\n" +
+    "OUTPUT IS DECISION-FIRST. The MOST IMPORTANT field is `decisionSummary`, which must come first and answer, " +
+    "in simple language: would I consider buying this now or not, what could the current data/news do to the stock, " +
+    "WHY, what kind of company is it (is it up-and-coming, and which theme — AI / fintech / space / defense / " +
+    "crypto / etc.), and the single biggest risk. Then provide the deeper evidence sections.\n\n" +
+    "SECTIONS, in this order:\n" +
+    "0) decisionSummary — the plain-English decision (action + one-sentence verdict + expected stock impact + why-now " +
+    "bullets + growth story + biggest risk).\n" +
     "A) Verdict — one of BUY_CANDIDATE / SELL_OR_AVOID / WATCHLIST / NO_EDGE, with confidence and a time horizon.\n" +
     "B) What the live data/news likely does to the stock — bullish / bearish / mixed, the likely market reaction, and WHY.\n" +
     "C) Bull case — the concrete upside.\n" +
@@ -165,11 +177,13 @@ function buildPrompt(input: GenerateInput): { system: string; user: string } {
     (liveOn
       ? "- You DO have a live Finnhub snapshot (quote / metrics / recent news) below. USE the specific live numbers and " +
         "headlines explicitly in your reasoning and cite them. A strong call (BUY_CANDIDATE or SELL_OR_AVOID) is allowed " +
-        "ONLY when the live data and news directly support it; otherwise WATCHLIST or NO_EDGE.\n"
+        "ONLY when the live data and news directly support it; otherwise WATCHLIST, WAIT_FOR_PULLBACK, or NO_EDGE.\n"
       : "- You have NO live market/news/fundamental feed for this request. Any numbers in context are seeded/illustrative " +
         "and may be stale. Do NOT invent live prices or 'today's' figures.\n" +
         "- Without live evidence, default to WATCHLIST (plausible thesis worth tracking) or NO_EDGE (no discernible edge). " +
         "Never issue an arbitrary BUY_CANDIDATE or SELL_OR_AVOID to seem decisive.\n") +
+    "- The `decisionSummary.action` may be BUY_CANDIDATE, WAIT_FOR_PULLBACK, WATCHLIST, AVOID, SELL_OR_AVOID, or NO_EDGE. " +
+    "Keep it consistent with the Verdict `rating`.\n" +
     "- Never claim certainty. State what would change the verdict.\n" +
     "- `confidence` must be Low whenever the verdict rests on seed/illustrative data rather than live figures.\n" +
     "- Map your verdict to the JSON `rating` field using EXACTLY these tokens: BUY_CANDIDATE, AVOID (for sell/avoid), " +
@@ -185,6 +199,17 @@ function buildPrompt(input: GenerateInput): { system: string; user: string } {
     `${steps}${peerContext}\n\n` +
     `Return STRICT JSON matching EXACTLY this TypeScript type and nothing else:\n` +
     `{\n` +
+    `  "decisionSummary": {\n` +
+    `    "action": "BUY_CANDIDATE"|"WAIT_FOR_PULLBACK"|"WATCHLIST"|"AVOID"|"SELL_OR_AVOID"|"NO_EDGE",\n` +
+    `    "plainEnglish": string,  // ONE short sentence, plain English: "I would / would not consider this now because…" — research verdict, NOT personal advice\n` +
+    `    "expectedStockImpact": {\n` +
+    `      "direction": "Bullish"|"Bearish"|"Mixed"|"Volatile",\n` +
+    `      "explanation": string  // 1-2 plain sentences: what the current data/news could realistically do to the price\n` +
+    `    },\n` +
+    `    "whyNow": string[],   // 2-4 short, simple-language reasons (no undefined jargon)\n` +
+    `    "growthStory": string, // 1-2 sentences: is it up-and-coming, and which theme (AI / fintech / space / defense / crypto / etc.)\n` +
+    `    "mainRisk": string     // ONE simple sentence — the single biggest risk\n` +
+    `  },\n` +
     `  "marketView": {\n` +
     `    "lean": "Bullish"|"Bearish"|"Mixed",  // overall read of the live data/news\n` +
     `    "summary": string,  // what the data/news likely does to the stock + likely market reaction and why\n` +
@@ -284,6 +309,68 @@ function buildMockMarketView(input: GenerateInput): MarketViewSection {
         : "the live signals are mixed, so the next catalyst (earnings, guidance, or a macro print) is likely to set direction rather than current momentum.");
 
   return { lean, summary, drivers: drivers.length ? drivers : ["Live data attached but thin — treat the read as low-conviction."] };
+}
+
+/** Map a sector/theme string to a plain-English "up-and-coming" growth story. */
+function buildGrowthStory(input: GenerateInput): string {
+  const { company } = input;
+  const hay = `${company.sector} ${company.theme ?? ""} ${company.whyNow ?? ""} ${company.name}`.toLowerCase();
+  const theme =
+    /\bai\b|artificial intelligence|gpu|data ?cent|inference|machine learning|llm/.test(hay) ? "AI / compute"
+    : /fintech|bank|lending|payments|neobank|credit|wallet/.test(hay) ? "fintech"
+    : /space|satellite|launch|rocket|orbit|lunar/.test(hay) ? "space"
+    : /defen[cs]e|military|aerospace|drone/.test(hay) ? "defense / aerospace"
+    : /crypto|bitcoin|blockchain|web3|token|digital asset/.test(hay) ? "crypto"
+    : /ev\b|electric vehicle|battery|solar|clean energy|renewable/.test(hay) ? "clean energy / EVs"
+    : /biotech|pharma|gene|therap|drug|clinical/.test(hay) ? "biotech"
+    : /cyber|security|saas|cloud|software/.test(hay) ? "software / cybersecurity"
+    : null;
+  if (theme) {
+    return `${company.name} is a ${theme} play. Whether it's genuinely "up-and-coming" depends on durable growth and a funded catalyst — confirm both before treating the theme as a reason to own it.`;
+  }
+  return `${company.name} sits in ${company.sector}. There's no obvious hot-theme tailwind here, so the case has to rest on the company's own numbers, not a sector story.`;
+}
+
+/** Build the decision-first plain-English summary for the fallback. */
+function buildMockDecisionSummary(input: GenerateInput, rating: ResearchRating): DecisionSummary {
+  const { ticker, live } = input;
+  const liveOn = hasLiveSignal(live);
+  const mv = buildMockMarketView(input);
+  const direction: DecisionSummary["expectedStockImpact"]["direction"] = mv.lean;
+
+  // The offline fallback never fabricates BUY/AVOID, so the action mirrors the
+  // disciplined rating (WATCHLIST / NO_EDGE) rather than a strong call.
+  const action: DecisionAction = rating === "NO_EDGE" ? "NO_EDGE" : "WATCHLIST";
+
+  const plainEnglish =
+    action === "NO_EDGE"
+      ? `I would not act on ${ticker} yet — there's nothing here that gives a real edge until live data is connected.`
+      : liveOn
+        ? `I'd keep ${ticker} on the watchlist for now — the live snapshot is attached, but this offline summary doesn't grade a full buy/sell, so it stays "watch, don't act" until the live AI model runs.`
+        : `I'd keep ${ticker} on the watchlist, not buy it today — there's a plausible story but no live data connected to back a stronger call.`;
+
+  const impactExplanation = liveOn
+    ? mv.summary
+    : `Without a live price and recent news feed, there's no fresh catalyst to push the stock either way right now — connect live data to read the likely near-term move.`;
+
+  const whyNow = liveOn
+    ? mv.drivers.slice(0, 4)
+    : [
+        "No live price or news is connected, so there's no fresh trigger to act on today.",
+        "The story is worth tracking, but the numbers behind it need to be pulled and checked.",
+        "A real buy/sell call needs current valuation, growth, and risk data — none of that is live here.",
+      ];
+
+  return {
+    action,
+    plainEnglish,
+    expectedStockImpact: { direction, explanation: impactExplanation },
+    whyNow,
+    growthStory: buildGrowthStory(input),
+    mainRisk: liveOn
+      ? "Acting on an offline read without confirming the latest filings and guidance — the numbers may have moved."
+      : "Buying on a story before the live valuation and growth figures confirm it's actually cheap for the growth.",
+  };
 }
 
 /** Deterministic, polished fallback derived from seeded + any live data. */
@@ -435,6 +522,7 @@ export function buildMockAnalysis(input: GenerateInput, debug?: string): Generat
     generatedAt: Date.now(),
     debug,
     live: live ?? null,
+    decisionSummary: buildMockDecisionSummary(input, rating),
     marketView: buildMockMarketView(input),
     deepDive,
     peerValuation: {
@@ -535,6 +623,30 @@ async function callClaude(input: GenerateInput): Promise<GeneratedAnalysis> {
     drivers: asStringArray(mv.drivers, mockBase.marketView.drivers),
   };
 
+  const ds = parsed.decisionSummary ?? {};
+  const dsImpact = ds.expectedStockImpact ?? {};
+  const validActions: DecisionAction[] = [
+    "BUY_CANDIDATE", "WAIT_FOR_PULLBACK", "WATCHLIST", "AVOID", "SELL_OR_AVOID", "NO_EDGE",
+  ];
+  const action: DecisionAction = validActions.includes(
+    String(ds.action ?? "").toUpperCase().replace(/[\s-]/g, "_") as DecisionAction,
+  )
+    ? (String(ds.action).toUpperCase().replace(/[\s-]/g, "_") as DecisionAction)
+    : mockBase.decisionSummary.action;
+  const decisionSummary: DecisionSummary = {
+    action,
+    plainEnglish: String(ds.plainEnglish ?? mockBase.decisionSummary.plainEnglish),
+    expectedStockImpact: {
+      direction: ["Bullish", "Bearish", "Mixed", "Volatile"].includes(dsImpact.direction)
+        ? dsImpact.direction
+        : mockBase.decisionSummary.expectedStockImpact.direction,
+      explanation: String(dsImpact.explanation ?? mockBase.decisionSummary.expectedStockImpact.explanation),
+    },
+    whyNow: asStringArray(ds.whyNow, mockBase.decisionSummary.whyNow),
+    growthStory: String(ds.growthStory ?? mockBase.decisionSummary.growthStory),
+    mainRisk: String(ds.mainRisk ?? mockBase.decisionSummary.mainRisk),
+  };
+
   return {
     ticker: input.ticker,
     method: input.method.key,
@@ -543,6 +655,7 @@ async function callClaude(input: GenerateInput): Promise<GeneratedAnalysis> {
     model: data?.model ?? CLAUDE_MODEL,
     generatedAt: Date.now(),
     live: input.live ?? null,
+    decisionSummary,
     marketView,
     deepDive: {
       summary: String(dd.summary ?? mockBase.deepDive.summary),
